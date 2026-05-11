@@ -57,14 +57,6 @@ interface SidecarHandle {
   write(data: string): Promise<void>;
   /** Kill the child process. */
   kill(): Promise<void>;
-  /** Subscribe to stdout data events. Payloads are arbitrary chunks, not necessarily complete lines. */
-  onStdout(handler: (chunk: string) => void): void;
-  /** Subscribe to stderr data events (string lines). Ignored for safety. */
-  onStderr(_handler: (line: string) => void): void;
-  /** Subscribe to process close event. */
-  onClose(handler: (payload: { code: number | null; signal: number | null }) => void): void;
-  /** Subscribe to process error event. */
-  onError(handler: (err: string) => void): void;
 }
 
 /**
@@ -109,31 +101,41 @@ export class SidecarTransport implements Transport {
     this._setStatus("connecting");
 
     try {
-      const handle = await spawnSidecar(this._sidecarCommand, this._sidecarArgs);
-      if (!handle) {
-        this._setStatus("disconnected");
-        return;
-      }
-      this._handle = handle;
+      const shell = await import("@tauri-apps/plugin-shell");
+      const cmd = shell.Command.sidecar(this._sidecarCommand, this._sidecarArgs);
 
-      handle.onStdout((chunk) => {
+      // ── Register ALL event handlers BEFORE spawn() ──────────────────
+      // Tauri fires events as soon as the process produces output.
+      // Registering handlers after spawn() creates a race window where
+      // early close/error events can be missed, causing silent failures.
+
+      cmd.stdout.on("data", (chunk: string) => {
         this._stdoutBuffer += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk as unknown as ArrayBuffer);
         this._drainBuffer();
       });
 
-      // stderr intentionally ignored — may contain config values
-      handle.onStderr(() => {});
+      // Log stderr for diagnostics; never expose to UI (may contain config values)
+      cmd.stderr.on("data", (line: string) => {
+        if (line.trim()) console.debug("[MiQi sidecar stderr]", line.trimEnd());
+      });
 
-      handle.onClose((payload) => {
+      cmd.on("close", (payload: { code: number | null; signal: number | null }) => {
+        const prevHandle = this._handle;
         this._handle = null;
         if (this._closed) return;
         console.warn("[MiQi] Sidecar closed", payload);
-        _rejectPendingRequests("Sidecar closed");
-        this._setStatus("disconnected");
-        this._scheduleReconnect();
+        if (prevHandle !== null) {
+          // Only reject/reconnect if we had previously connected successfully
+          _rejectPendingRequests("Sidecar closed");
+          this._setStatus("disconnected");
+          this._scheduleReconnect();
+        } else {
+          // Closed before connect() finished — connect() will handle it
+          this._setStatus("disconnected");
+        }
       });
 
-      handle.onError((err) => {
+      cmd.on("error", (err: string) => {
         this._handle = null;
         if (this._closed) return;
         console.error("[MiQi] Sidecar error:", err);
@@ -142,11 +144,19 @@ export class SidecarTransport implements Transport {
         this._scheduleReconnect();
       });
 
+      // ── Now spawn ───────────────────────────────────────────────────
+      const child = await cmd.spawn();
+      this._handle = {
+        write: (data: string) => child.write(data),
+        kill: () => child.kill(),
+      };
+
       this._setStatus("connected");
       // Flush any requests that arrived while we were connecting
       const queued = this._pendingQueue.splice(0);
       for (const req of queued) this._doSend(req);
-    } catch {
+    } catch (e) {
+      console.error("[MiQi] SidecarTransport.connect failed:", e);
       this._setStatus("disconnected");
     }
   }
@@ -268,44 +278,6 @@ export class SidecarTransport implements Transport {
       this._reconnectTimer = null;
       if (!this._closed) this.connect();
     }, 3000);
-  }
-}
-
-// ── Sidecar spawn helper ─────────────────────────────────────────────────
-
-/**
- * Spawn the sidecar process using Tauri's shell plugin.
- * Returns null if Tauri is not available (non-Tauri environment).
- */
-async function spawnSidecar(command: string, args: string[]): Promise<SidecarHandle | null> {
-  try {
-    const shell = await import("@tauri-apps/plugin-shell");
-    const cmd = shell.Command.sidecar(command, args);
-    const child = await cmd.spawn();
-
-    return {
-      async write(data: string) {
-        await child.write(data);
-      },
-      async kill() {
-        await child.kill();
-      },
-      onStdout(handler) {
-        cmd.stdout.on("data", handler);
-      },
-      onStderr(handler) {
-        cmd.stderr.on("data", handler);
-      },
-      onClose(handler) {
-        cmd.on("close", handler);
-      },
-      onError(handler) {
-        cmd.on("error", handler);
-      },
-    };
-  } catch (e) {
-    console.error("[MiQi] spawnSidecar failed:", e);
-    return null;
   }
 }
 
