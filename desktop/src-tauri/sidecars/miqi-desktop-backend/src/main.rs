@@ -59,6 +59,18 @@ fn find_python(repo_root: Option<&Path>) -> PathBuf {
         return python;
     }
 
+    if let Some(python) = python_from_env_dir("VIRTUAL_ENV") {
+        return python;
+    }
+
+    if let Some(python) = python_from_env_dir("CONDA_PREFIX") {
+        return python;
+    }
+
+    if let Some(python) = python_from_env_dir("UV_PROJECT_ENVIRONMENT") {
+        return python;
+    }
+
     if let Some(root) = repo_root {
         let windows_venv = root.join(".venv").join("Scripts").join("python.exe");
         if windows_venv.is_file() {
@@ -72,6 +84,27 @@ fn find_python(repo_root: Option<&Path>) -> PathBuf {
     }
 
     PathBuf::from("python")
+}
+
+fn python_from_env_dir(var_name: &str) -> Option<PathBuf> {
+    let root = env::var_os(var_name).map(PathBuf::from)?;
+
+    let windows_python = root.join("Scripts").join("python.exe");
+    if windows_python.is_file() {
+        return Some(windows_python);
+    }
+
+    let windows_root_python = root.join("python.exe");
+    if windows_root_python.is_file() {
+        return Some(windows_root_python);
+    }
+
+    let unix_python = root.join("bin").join("python");
+    if unix_python.is_file() {
+        return Some(unix_python);
+    }
+
+    None
 }
 
 fn prepend_pythonpath(command: &mut Command, repo_root: &Path) {

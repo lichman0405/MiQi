@@ -132,6 +132,11 @@ The expected path is:
 - The React frontend talks to the sidecar over stdio JSON-RPC.
 - The bottom-right connection indicator shows `Connected`, not `Mock mode`.
 
+Notes:
+
+- The dev sidecar launcher prefers `MIQI_DESKTOP_PYTHON`, then the currently activated virtual environment or conda environment, then the repo `.venv`, and finally bare `python`.
+- If the desktop window opens but the connection badge becomes red `Disconnected`, run `.venv\Scripts\python.exe scripts\desktop_stdio_smoke.py --dev-sidecar` from the repo root before debugging the React UI. If that smoke test passes, the MiQi backend path is healthy and the remaining problem is in the Tauri-side spawn/integration layer.
+
 ## 7. Test In The Frontend
 
 In the desktop window, send this prompt:

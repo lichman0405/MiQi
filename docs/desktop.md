@@ -49,7 +49,7 @@ npm run tauri dev    # Compiles Rust + opens desktop window
 
 This starts the Vite dev server and the Tauri shell, which renders the React UI in a system WebView. The Python sidecar (`miqi desktop-backend --stdio`) is launched automatically via Tauri's shell plugin, and the frontend communicates with it over newline-delimited JSON-RPC through stdio.
 
-`npm run sidecar:dev` compiles a tiny local launcher from `src-tauri/sidecars/miqi-desktop-backend/` and copies the generated platform-suffixed executable to `src-tauri/binaries/miqi-desktop-backend-<target-triple>.exe` on Windows. The generated executable is ignored by git; the committed source is the launcher code and prepare script. The launcher finds the repo `.venv` Python and runs `miqi desktop-backend --stdio` without logging credentials.
+`npm run sidecar:dev` compiles a tiny local launcher from `src-tauri/sidecars/miqi-desktop-backend/` and copies the generated platform-suffixed executable to `src-tauri/binaries/miqi-desktop-backend-<target-triple>.exe` on Windows. The generated executable is ignored by git; the committed source is the launcher code and prepare script. The launcher prefers `MIQI_DESKTOP_PYTHON`, the currently activated virtual environment or conda environment, then the repo `.venv`, and finally falls back to `python` so local desktop dev does not depend on a single environment layout.
 
 !!! warning "Windows WDAC limitation"
     On Windows systems with Application Control Policy (WDAC/SiPolicy), `npm run tauri dev` may fail because the Rust build script for `vswhom-sys` (a transitive Tauri dependency) triggers os error 4551. This is an environment-level restriction, not a code issue. The frontend builds and runs correctly under Vite. Full Tauri native builds require either a WDAC policy update or a non-WDAC development environment.
@@ -95,6 +95,11 @@ be spawned. Expected initial RPC behavior is that status, sessions, tools, and
 memory panels load from the real backend. This smoke path remains local desktop
 IPC only; it does not require a hosted web app or a default HTTP/WebSocket
 product transport.
+
+If the badge turns red **Disconnected** instead of **Connected**, run the
+`--dev-sidecar` smoke check first. If the smoke check passes, the Python
+backend and launcher are healthy and the remaining issue is in the Tauri sidecar
+spawn layer rather than the MiQi backend JSON-RPC service.
 
 ### Project Structure
 
