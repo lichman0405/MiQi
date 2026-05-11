@@ -80,6 +80,13 @@ export class SidecarTransport implements Transport {
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Requests queued while the sidecar is connecting/reconnecting. */
   private _pendingQueue: JsonRpcRequest[] = [];
+  /**
+   * Generation counter — incremented on every connect() attempt.
+   * Event handlers capture their generation at registration time and
+   * ignore events from older generations (stale events from dead processes
+   * that arrive after a reconnect has already succeeded).
+   */
+  private _generation = 0;
 
   constructor(sidecarCommand = "binaries/miqi-desktop-backend", sidecarArgs = ["--stdio"]) {
     this._sidecarCommand = sidecarCommand;
@@ -100,45 +107,59 @@ export class SidecarTransport implements Transport {
     if (this._status === "connected" || this._status === "connecting") return;
     this._setStatus("connecting");
 
+    // Capture this generation so event handlers from this attempt can
+    // tell themselves apart from those registered in a later reconnect.
+    const generation = ++this._generation;
+
     try {
       const shell = await import("@tauri-apps/plugin-shell");
       const cmd = shell.Command.sidecar(this._sidecarCommand, this._sidecarArgs);
 
       // ── Register ALL event handlers BEFORE spawn() ──────────────────
       // Tauri fires events as soon as the process produces output.
-      // Registering handlers after spawn() creates a race window where
-      // early close/error events can be missed, causing silent failures.
+      // Handlers registered after spawn() create a race window.
+      // Each handler guards against stale events from superseded connections
+      // via the generation counter.
 
       cmd.stdout.on("data", (chunk: string) => {
+        if (generation !== this._generation) return;
         this._stdoutBuffer += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk as unknown as ArrayBuffer);
         this._drainBuffer();
       });
 
-      // Log stderr for diagnostics; never expose to UI (may contain config values)
       cmd.stderr.on("data", (line: string) => {
+        if (generation !== this._generation) return;
         if (line.trim()) console.debug("[MiQi sidecar stderr]", line.trimEnd());
       });
 
       cmd.on("close", (payload: { code: number | null; signal: number | null }) => {
-        const prevHandle = this._handle;
+        if (generation !== this._generation) {
+          // Stale event from a superseded connection — ignore completely.
+          console.debug("[MiQi] Ignoring stale close event from generation", generation, payload);
+          return;
+        }
+        const wasConnected = this._handle !== null;
         this._handle = null;
         if (this._closed) return;
-        console.warn("[MiQi] Sidecar closed", payload);
-        if (prevHandle !== null) {
-          // Only reject/reconnect if we had previously connected successfully
+        console.warn("[MiQi] Sidecar closed (gen=" + generation + ")", payload);
+        if (wasConnected) {
           _rejectPendingRequests("Sidecar closed");
           this._setStatus("disconnected");
           this._scheduleReconnect();
         } else {
-          // Closed before connect() finished — connect() will handle it
+          // Closed before connect() set the handle — no pending requests to reject
           this._setStatus("disconnected");
         }
       });
 
       cmd.on("error", (err: string) => {
+        if (generation !== this._generation) {
+          console.debug("[MiQi] Ignoring stale error event from generation", generation, err);
+          return;
+        }
         this._handle = null;
         if (this._closed) return;
-        console.error("[MiQi] Sidecar error:", err);
+        console.error("[MiQi] Sidecar error (gen=" + generation + "):", err);
         _rejectPendingRequests("Sidecar error");
         this._setStatus("disconnected");
         this._scheduleReconnect();
@@ -146,6 +167,16 @@ export class SidecarTransport implements Transport {
 
       // ── Now spawn ───────────────────────────────────────────────────
       const child = await cmd.spawn();
+
+      // After spawn(), re-check that our generation is still current
+      // (close/error could have fired and already incremented generation
+      // via a reconnect path — unlikely but possible on very fast crashes).
+      if (generation !== this._generation) {
+        // A newer connect() superseded us; kill the just-spawned child.
+        child.kill().catch(() => {});
+        return;
+      }
+
       this._handle = {
         write: (data: string) => child.write(data),
         kill: () => child.kill(),
@@ -156,8 +187,10 @@ export class SidecarTransport implements Transport {
       const queued = this._pendingQueue.splice(0);
       for (const req of queued) this._doSend(req);
     } catch (e) {
-      console.error("[MiQi] SidecarTransport.connect failed:", e);
-      this._setStatus("disconnected");
+      if (generation === this._generation) {
+        console.error("[MiQi] SidecarTransport.connect failed:", e);
+        this._setStatus("disconnected");
+      }
     }
   }
 

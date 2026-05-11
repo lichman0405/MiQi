@@ -67,22 +67,37 @@ async def read_requests(
 
             response = await _handle_line(text, dispatcher)
             if response is not None:
-                _write_response(response)
+                await _write_response(response)
     finally:
         if event_emitter is not None:
             event_emitter.unsubscribe(_event_to_stdout)
 
 
 async def _event_to_stdout(event: RuntimeEvent) -> None:
-    """Write runtime events as method-style JSON-RPC notifications."""
+    """Write runtime events as method-style JSON-RPC notifications.
+
+    Runs the actual write in a thread so that synchronous stdout I/O
+    (which blocks until the pipe buffer drains) never stalls the asyncio
+    event loop.  This matters especially on Windows where pipe writes can
+    block for tens of milliseconds when Tauri is busy reading.
+    """
     envelope = JsonRpcEvent(
         method=event.type,
         params=event.model_dump(exclude={"type"}),
     )
     payload = envelope.model_dump(exclude_none=True)
     line = json.dumps(payload, ensure_ascii=False) + "\n"
-    sys.stdout.write(line)
-    sys.stdout.flush()
+
+    def _write() -> None:
+        try:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        except OSError:
+            # Pipe closed (Tauri shut down or sidecar being killed).
+            # Swallow silently — the read loop will detect EOF and exit.
+            pass
+
+    await asyncio.to_thread(_write)
 
 
 async def _handle_line(
@@ -118,10 +133,17 @@ async def _handle_line(
     return await dispatcher.dispatch(request)
 
 
-def _write_response(response: JsonRpcResponse) -> None:
-    """Serialize and write a response to stdout."""
+async def _write_response(response: JsonRpcResponse) -> None:
+    """Serialize and write a response to stdout (non-blocking)."""
     payload = response.model_dump(exclude_none=True)
     payload["id"] = response.id
     line = json.dumps(payload, ensure_ascii=False) + "\n"
-    sys.stdout.write(line)
-    sys.stdout.flush()
+
+    def _write() -> None:
+        try:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        except OSError:
+            pass
+
+    await asyncio.to_thread(_write)
