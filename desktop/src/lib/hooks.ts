@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { request, subscribe, type JsonRpcEvent } from "./ipc";
+import { request, subscribe, onStatusChange, type JsonRpcEvent } from "./ipc";
 import type {
   CronListResult,
   HeartbeatStatusResult,
@@ -43,6 +43,8 @@ function useIpcFetch<T>(method: string, params?: Record<string, unknown>): Fetch
   });
   const [refreshKey, setRefreshKey] = useState(0);
   const paramsKey = JSON.stringify(params ?? {});
+  // Track whether data was loaded successfully so we can skip re-fetch on reconnect
+  const hasDataRef = useRef(false);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
@@ -50,10 +52,14 @@ function useIpcFetch<T>(method: string, params?: Record<string, unknown>): Fetch
     let cancelled = false;
 
     setState({ data: null, loading: true, error: null });
+    hasDataRef.current = false;
 
     request<T>(method, params)
       .then((data) => {
-        if (!cancelled) setState({ data, loading: false, error: null });
+        if (!cancelled) {
+          hasDataRef.current = true;
+          setState({ data, loading: false, error: null });
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -64,6 +70,16 @@ function useIpcFetch<T>(method: string, params?: Record<string, unknown>): Fetch
 
     return () => { cancelled = true; };
   }, [method, paramsKey, refreshKey]);
+
+  // Auto-retry on transport reconnection if the previous fetch failed
+  useEffect(() => {
+    const unsub = onStatusChange((status) => {
+      if (status === "connected" && !hasDataRef.current) {
+        setRefreshKey((k) => k + 1);
+      }
+    });
+    return unsub;
+  }, []);
 
   return { ...state, refresh };
 }

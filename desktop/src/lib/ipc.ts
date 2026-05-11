@@ -86,6 +86,8 @@ export class SidecarTransport implements Transport {
   private _stdoutBuffer = "";
   private _closed = false;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Requests queued while the sidecar is connecting/reconnecting. */
+  private _pendingQueue: JsonRpcRequest[] = [];
 
   constructor(sidecarCommand = "binaries/miqi-desktop-backend", sidecarArgs = ["--stdio"]) {
     this._sidecarCommand = sidecarCommand;
@@ -125,38 +127,32 @@ export class SidecarTransport implements Transport {
       handle.onClose((payload) => {
         this._handle = null;
         if (this._closed) return;
-        void payload; // code/signal available if needed for diagnostics
+        console.warn("[MiQi] Sidecar closed", payload);
         _rejectPendingRequests("Sidecar closed");
         this._setStatus("disconnected");
         this._scheduleReconnect();
       });
 
-      handle.onError(() => {
+      handle.onError((err) => {
         this._handle = null;
         if (this._closed) return;
+        console.error("[MiQi] Sidecar error:", err);
         _rejectPendingRequests("Sidecar error");
         this._setStatus("disconnected");
         this._scheduleReconnect();
       });
 
       this._setStatus("connected");
+      // Flush any requests that arrived while we were connecting
+      const queued = this._pendingQueue.splice(0);
+      for (const req of queued) this._doSend(req);
     } catch {
       this._setStatus("disconnected");
     }
   }
 
-  send(request: JsonRpcRequest): void {
-    if (this._status !== "connected" || !this._handle) {
-      for (const h of this._responseHandlers) {
-        h({
-          jsonrpc: "2.0",
-          id: request.id,
-          error: { code: -32000, message: "Sidecar not connected" },
-        });
-      }
-      return;
-    }
-
+  private _doSend(request: JsonRpcRequest): void {
+    if (!this._handle) return;
     const line = JSON.stringify(request) + "\n";
     this._handle.write(line).catch(() => {
       for (const h of this._responseHandlers) {
@@ -167,6 +163,25 @@ export class SidecarTransport implements Transport {
         });
       }
     });
+  }
+
+  send(request: JsonRpcRequest): void {
+    if (this._status === "connecting" || this._status === "restarting") {
+      // Queue the request; will be flushed once connected
+      this._pendingQueue.push(request);
+      return;
+    }
+    if (this._status !== "connected" || !this._handle) {
+      for (const h of this._responseHandlers) {
+        h({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32000, message: "Sidecar not connected" },
+        });
+      }
+      return;
+    }
+    this._doSend(request);
   }
 
   onResponse(handler: (response: JsonRpcResponse) => void): () => void {
@@ -194,6 +209,7 @@ export class SidecarTransport implements Transport {
       this._handle.kill().catch(() => {});
       this._handle = null;
     }
+    this._pendingQueue = [];
     _rejectPendingRequests("Sidecar transport closed");
     this._setStatus("disconnected");
     this._responseHandlers.clear();
@@ -287,7 +303,8 @@ async function spawnSidecar(command: string, args: string[]): Promise<SidecarHan
         cmd.on("error", handler);
       },
     };
-  } catch {
+  } catch (e) {
+    console.error("[MiQi] spawnSidecar failed:", e);
     return null;
   }
 }
@@ -1244,18 +1261,17 @@ export function onStatusChange(handler: StatusHandler): () => void {
 export async function initTransport(): Promise<TransportStatus> {
   const sidecar = new SidecarTransport();
 
-  const statusHandler = (status: TransportStatus) => {
-    for (const h of _statusSubscribers) h(status);
-  };
-
-  sidecar.onStatusChange(statusHandler);
+  // Replace transport immediately so all requests during startup are queued in the sidecar.
+  // SidecarTransport queues requests while status is "connecting" and flushes on connect.
+  setTransport(sidecar);
+  _forwardEvents();
+  _forwardStatus();
 
   await sidecar.connect();
 
   if (sidecar.status === "connected") {
-    setTransport(sidecar);
-    _forwardEvents();
-    _forwardStatus();
+    // Notify status subscribers that we're connected
+    for (const h of _statusSubscribers) h("connected");
     return "connected";
   }
 
