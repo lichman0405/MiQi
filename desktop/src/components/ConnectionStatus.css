@@ -1,0 +1,69 @@
+.connection-status {
+  position: fixed;
+  bottom: var(--space-sm);
+  right: var(--space-lg);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 2px var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.conn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.conn-label {
+  color: var(--text-secondary);
+}
+
+.conn-connected {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+
+.conn-connected .conn-dot {
+  background: #4caf50;
+}
+
+.conn-connecting,
+.conn-restarting {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+
+.conn-connecting .conn-dot,
+.conn-restarting .conn-dot {
+  background: var(--brand-yellow);
+  animation: conn-pulse 1.2s ease-in-out infinite;
+}
+
+.conn-disconnected {
+  background: var(--bg-surface);
+  border: 1px solid var(--brand-red);
+}
+
+.conn-disconnected .conn-dot {
+  background: var(--brand-red);
+}
+
+.conn-mock {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+}
+
+.conn-mock .conn-dot {
+  background: var(--text-tertiary);
+}
+
+@keyframes conn-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}

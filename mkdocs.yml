@@ -61,6 +61,11 @@ nav:
   - Getting Started: getting-started.md
   - Configuration: configuration.md
   - CLI Reference: cli-reference.md
+  - Desktop:
+      - desktop.md
+      - desktop-architecture.md
+      - desktop-design.md
+      - desktop-frontend-backend-test-runbook.md
   - MCP Integration: mcp-integration.md
   - Architecture: architecture.md
   - Memory System: memory-system.md

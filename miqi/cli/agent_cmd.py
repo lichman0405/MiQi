@@ -39,48 +39,19 @@ def register_agent_command(
         """Interact with the agent directly."""
         from loguru import logger
 
-        from miqi.agent.loop import AgentLoop
-        from miqi.bus.queue import MessageBus
-        from miqi.config.loader import get_data_dir, load_config
-        from miqi.cron.service import CronService
+        from miqi.config.loader import load_config
+        from miqi.runtime.factory import create_runtime, wire_cron_callback
 
         config = load_config()
-
-        bus = MessageBus()
-        provider = make_provider(config)
-
-        cron_store_path = get_data_dir() / "cron" / "jobs.json"
-        cron = CronService(cron_store_path, job_timeout=config.cron.job_timeout_seconds)
 
         if logs:
             logger.enable("miqi")
         else:
             logger.disable("miqi")
 
-        agent_loop = AgentLoop(
-            bus=bus,
-            provider=provider,
-            workspace=config.workspace_path,
-            agent_name=config.agents.defaults.name,
-            model=config.agents.defaults.model,
-            temperature=config.agents.defaults.temperature,
-            max_tokens=config.agents.defaults.max_tokens,
-            max_iterations=config.agents.defaults.max_tool_iterations,
-            reflect_after_tool_calls=config.agents.defaults.reflect_after_tool_calls,
-            web_config=config.tools.web,
-            paper_config=config.tools.papers,
-            memory_window=config.agents.defaults.memory_window,
-            max_tool_result_chars=config.agents.defaults.max_tool_result_chars,
-            context_limit_chars=config.agents.defaults.context_limit_chars,
-            exec_config=config.tools.exec,
-            memory_config=config.agents.memory,
-            self_improvement_config=config.agents.self_improvement,
-            session_config=config.agents.sessions,
-            cron_service=cron,
-            restrict_to_workspace=config.tools.restrict_to_workspace,
-            mcp_servers=config.tools.mcp_servers,
-            channels_config=config.channels,
-        )
+        rt = create_runtime(config, make_provider=make_provider)
+        wire_cron_callback(rt)
+        agent_loop = rt.agent
 
         def _thinking_ctx():
             if logs:
@@ -94,26 +65,6 @@ def register_agent_command(
             if ch and not tool_hint and not ch.send_progress:
                 return
             console.print(f"  [dim]↳ {content}[/dim]")
-
-        async def on_cron_job(job) -> str | None:
-            from miqi.bus.events import OutboundMessage
-            response = await agent_loop.process_direct(
-                job.payload.message,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
-            )
-            if job.payload.deliver and job.payload.to:
-                await bus.publish_outbound(
-                    OutboundMessage(
-                        channel=job.payload.channel or "cli",
-                        chat_id=job.payload.to,
-                        content=response or "",
-                    )
-                )
-            return response
-
-        cron.on_job = on_cron_job
 
         if message:
             async def run_once():
@@ -145,7 +96,7 @@ def register_agent_command(
             signal.signal(signal.SIGINT, _exit_on_sigint)
 
             async def run_interactive():
-                await cron.start()
+                await rt.cron.start()
                 bus_task = asyncio.create_task(agent_loop.run())
                 turn_done = asyncio.Event()
                 turn_done.set()
@@ -154,7 +105,7 @@ def register_agent_command(
                 async def _consume_outbound():
                     while True:
                         try:
-                            msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+                            msg = await asyncio.wait_for(rt.bus.consume_outbound(), timeout=1.0)
                             if msg.metadata.get("_progress"):
                                 is_tool_hint = msg.metadata.get("_tool_hint", False)
                                 ch = agent_loop.channels_config
@@ -195,7 +146,7 @@ def register_agent_command(
                             turn_done.clear()
                             turn_response.clear()
 
-                            await bus.publish_inbound(InboundMessage(
+                            await rt.bus.publish_inbound(InboundMessage(
                                 channel=cli_channel,
                                 sender_id="user",
                                 chat_id=cli_chat_id,

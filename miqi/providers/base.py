@@ -1,8 +1,10 @@
 """Base LLM provider interface."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 
 @dataclass
@@ -21,6 +23,7 @@ class LLMResponse:
     finish_reason: str = "stop"
     usage: dict[str, int] = field(default_factory=dict)
     reasoning_content: str | None = None  # Kimi, DeepSeek-R1 etc.
+    streamed: bool = False  # True if deltas were emitted during this call
 
     @property
     def has_tool_calls(self) -> bool:
@@ -35,6 +38,8 @@ class LLMProvider(ABC):
     Implementations should handle the specifics of each provider's API
     while maintaining a consistent interface.
     """
+
+    supports_streaming: bool = False
 
     def __init__(self, api_key: str | None = None, api_base: str | None = None):
         self.api_key = api_key
@@ -88,9 +93,10 @@ class LLMProvider(ABC):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        *,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
-        """
-        Send a chat completion request.
+        """Send a chat completion request.
 
         Args:
             messages: List of message dicts with 'role' and 'content'.
@@ -98,6 +104,11 @@ class LLMProvider(ABC):
             model: Model identifier (provider-specific).
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
+            on_delta: Optional async callback for streaming text deltas.
+                When provided, providers that support streaming will emit
+                incremental text chunks via this callback while still
+                returning the complete LLMResponse at the end.  Providers
+                that do not support streaming simply ignore the callback.
 
         Returns:
             LLMResponse with content and/or tool calls.

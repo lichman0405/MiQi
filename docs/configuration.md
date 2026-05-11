@@ -13,6 +13,9 @@ MiQi reads configuration from `~/.miqi/config.json`. The interactive wizard (`mi
 | Memory | `<workspace>/memory/` (default `~/.miqi/workspace/memory/`) |
 | Sessions | `<workspace>/sessions/` (default `~/.miqi/workspace/sessions/`) |
 
+!!! note "Desktop planning note"
+  The planned desktop entry point will separate the user's project workspace from MiQi's runtime data root. Existing configurations remain compatible: until a separate project root is configured, `agents.defaults.workspace` continues to serve as both the working directory and runtime data root.
+
 ---
 
 ## Minimal Config Skeleton
@@ -142,6 +145,26 @@ Schema for interactive approval of dangerous shell commands. The repository incl
 | `mode` | string | `"manual"` | Approval mode: `manual` or `off` |
 | `timeout` | int | `60` | Approval prompt timeout in seconds |
 | `allowlist` | list[string] | `[]` | Permanently approved danger-pattern descriptions |
+
+For the planned desktop UI, this section becomes the backing policy for explicit approval cards. Dangerous command detection should continue to live in `miqi/agent/command_approval.py`, while desktop-specific approval decisions should be mediated through a UI-agnostic approval service.
+
+---
+
+### Planned Desktop Configuration
+
+Desktop-specific configuration has not been added to the schema yet. When implemented, it should remain compatible with this file and should prefer additive fields over breaking changes.
+
+Expected configuration areas:
+
+| Area | Purpose |
+|---|---|
+| Desktop backend | stdio IPC defaults, optional development WebSocket, log level |
+| Workspace profiles | project root, MiQi data root, recent workspaces, pinned paths |
+| Session storage | JSONL compatibility, SQLite+FTS5 search backend, migration state |
+| Approval policy | approve once/session/always behavior, persisted allowlist |
+| UI preferences | theme, density, inspector visibility, notification preferences |
+
+Desktop configuration must not store secrets outside the existing protected config path unless the platform keychain is explicitly introduced later.
 
 #### `agents.selfImprovement`
 

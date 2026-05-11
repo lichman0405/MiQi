@@ -527,64 +527,32 @@ def register_management_commands(
     ):
         from loguru import logger
 
-        from miqi.agent.loop import AgentLoop
-        from miqi.bus.queue import MessageBus
-        from miqi.config.loader import get_data_dir, load_config
-        from miqi.cron.service import CronService
-        from miqi.cron.types import CronJob
+        from miqi.config.loader import load_config
+        from miqi.runtime.factory import create_runtime, wire_cron_callback
 
         logger.disable("miqi")
 
         config = load_config()
-        store_path = get_data_dir() / "cron" / "jobs.json"
-        service = CronService(store_path)
-        provider = make_provider_getter()(config)
-        bus = MessageBus()
-        agent_loop = AgentLoop(
-            bus=bus,
-            provider=provider,
-            workspace=config.workspace_path,
-            agent_name=config.agents.defaults.name,
-            model=config.agents.defaults.model,
-            temperature=config.agents.defaults.temperature,
-            max_tokens=config.agents.defaults.max_tokens,
-            max_iterations=config.agents.defaults.max_tool_iterations,
-            reflect_after_tool_calls=config.agents.defaults.reflect_after_tool_calls,
-            web_config=config.tools.web,
-            paper_config=config.tools.papers,
-            memory_window=config.agents.defaults.memory_window,
-            max_tool_result_chars=config.agents.defaults.max_tool_result_chars,
-            context_limit_chars=config.agents.defaults.context_limit_chars,
-            exec_config=config.tools.exec,
-            memory_config=config.agents.memory,
-            self_improvement_config=config.agents.self_improvement,
-            session_config=config.agents.sessions,
-            cron_service=service,
-            restrict_to_workspace=config.tools.restrict_to_workspace,
-            mcp_servers=config.tools.mcp_servers,
-            channels_config=config.channels,
-        )
+        rt = create_runtime(config, make_provider=make_provider_getter())
+        wire_cron_callback(rt)
 
         result_holder = []
 
-        async def on_job(job: CronJob) -> str | None:
-            response = await agent_loop.process_direct(
-                job.payload.message,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
-            )
-            result_holder.append(response)
-            return response
+        original_on_job = rt.cron.on_job
 
-        service.on_job = on_job
+        async def on_job_capture(job) -> str | None:
+            result = await original_on_job(job)
+            result_holder.append(result)
+            return result
+
+        rt.cron.on_job = on_job_capture
 
         async def run():
             try:
-                return await service.run_job(job_id, force=force)
+                return await rt.cron.run_job(job_id, force=force)
             finally:
-                agent_loop.stop()
-                await agent_loop.close_mcp()
+                rt.agent.stop()
+                await rt.agent.close_mcp()
 
         if asyncio.run(run()):
             console.print("[green]✓[/green] Job executed")

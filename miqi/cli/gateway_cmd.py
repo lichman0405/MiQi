@@ -22,14 +22,10 @@ def register_gateway_command(
         verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     ):
         """Start the MiQi gateway."""
-        from miqi.agent.loop import AgentLoop
-        from miqi.bus.queue import MessageBus
         from miqi.channels.manager import ChannelManager
-        from miqi.config.loader import get_data_dir, load_config
-        from miqi.cron.service import CronService
-        from miqi.cron.types import CronJob
+        from miqi.config.loader import load_config
         from miqi.heartbeat.service import HeartbeatService
-        from miqi.session.manager import SessionManager
+        from miqi.runtime.factory import create_runtime, wire_cron_callback
 
         if verbose:
             import logging
@@ -39,70 +35,14 @@ def register_gateway_command(
         console.print(f"{logo} Starting MiQi gateway on port {port}...")
 
         config = load_config()
-        bus = MessageBus()
-        provider = make_provider(config)
-        session_manager = SessionManager(
-            config.workspace_path,
-            compact_threshold_messages=config.agents.sessions.compact_threshold_messages,
-            compact_threshold_bytes=config.agents.sessions.compact_threshold_bytes,
-            compact_keep_messages=config.agents.sessions.compact_keep_messages,
-        )
+        rt = create_runtime(config, make_provider=make_provider, init_session_manager=True)
+        wire_cron_callback(rt)
 
-        cron_store_path = get_data_dir() / "cron" / "jobs.json"
-        cron = CronService(cron_store_path, job_timeout=config.cron.job_timeout_seconds)
-
-        agent = AgentLoop(
-            bus=bus,
-            provider=provider,
-            workspace=config.workspace_path,
-            agent_name=config.agents.defaults.name,
-            model=config.agents.defaults.model,
-            temperature=config.agents.defaults.temperature,
-            max_tokens=config.agents.defaults.max_tokens,
-            max_iterations=config.agents.defaults.max_tool_iterations,
-            reflect_after_tool_calls=config.agents.defaults.reflect_after_tool_calls,
-            web_config=config.tools.web,
-            paper_config=config.tools.papers,
-            memory_window=config.agents.defaults.memory_window,
-            max_tool_result_chars=config.agents.defaults.max_tool_result_chars,
-            context_limit_chars=config.agents.defaults.context_limit_chars,
-            exec_config=config.tools.exec,
-            memory_config=config.agents.memory,
-            self_improvement_config=config.agents.self_improvement,
-            session_config=config.agents.sessions,
-            cron_service=cron,
-            restrict_to_workspace=config.tools.restrict_to_workspace,
-            session_manager=session_manager,
-            mcp_servers=config.tools.mcp_servers,
-            channels_config=config.channels,
-        )
-
-        async def on_cron_job(job: CronJob) -> str | None:
-            response = await agent.process_direct(
-                job.payload.message,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
-            )
-            if job.payload.deliver and job.payload.to:
-                from miqi.bus.events import OutboundMessage
-
-                await bus.publish_outbound(
-                    OutboundMessage(
-                        channel=job.payload.channel or "cli",
-                        chat_id=job.payload.to,
-                        content=response or "",
-                    )
-                )
-            return response
-
-        cron.on_job = on_cron_job
-
-        channels = ChannelManager(config, bus)
+        channels = ChannelManager(config, rt.bus)
 
         def _pick_heartbeat_target() -> tuple[str, str]:
             enabled = set(channels.enabled_channels)
-            for item in session_manager.list_sessions():
+            for item in rt.session_manager.list_sessions():
                 key = item.get("key") or ""
                 if ":" not in key:
                     continue
@@ -119,7 +59,7 @@ def register_gateway_command(
             async def _silent(*_args, **_kwargs):
                 pass
 
-            return await agent.process_direct(
+            return await rt.agent.process_direct(
                 prompt,
                 session_key="heartbeat",
                 channel=channel,
@@ -133,7 +73,7 @@ def register_gateway_command(
             channel, chat_id = _pick_heartbeat_target()
             if channel == "cli":
                 return
-            await bus.publish_outbound(
+            await rt.bus.publish_outbound(
                 OutboundMessage(channel=channel, chat_id=chat_id, content=response)
             )
 
@@ -163,24 +103,24 @@ def register_gateway_command(
 
         async def run():
             try:
-                await cron.start()
+                await rt.cron.start()
 
-                cron_status = cron.status()
+                cron_status = rt.cron.status()
                 if cron_status["jobs"] > 0:
                     console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
                 await heartbeat.start()
                 await asyncio.gather(
-                    agent.run(),
+                    rt.agent.run(),
                     channels.start_all(),
                 )
             except KeyboardInterrupt:
                 console.print("\nShutting down...")
             finally:
-                await agent.close_mcp()
+                await rt.agent.close_mcp()
                 heartbeat.stop()
-                cron.stop()
-                agent.stop()
+                rt.cron.stop()
+                rt.agent.stop()
                 await channels.stop_all()
 
         asyncio.run(run())

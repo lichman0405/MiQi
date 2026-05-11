@@ -35,6 +35,7 @@ MiQi is a domain-focused evolution of the upstream [`nanobot`](https://github.co
 | **MCP Integration** | Connect any MCP-compatible tool server (e.g. [feishu-mcp](https://github.com/lichman0405/feishu-mcp)) |
 | **Memory** | RAM-first long-term snapshots, lesson extraction, and append-only JSONL session history under the configured workspace |
 | **Agent Runtime** | Safe concurrent tool execution for read-only batches, iteration-budget safeguards, MCP heartbeat progress, and optional embedded routing/compression hooks |
+| **Desktop** | Tauri 2 native desktop shell with React UI, Python sidecar runtime, stdio JSON-RPC IPC, sessions, tools, memory, cron, heartbeat, files, context, and settings surfaces |
 | **Extensibility** | MCP server integration, skill files, custom provider plugins |
 | **CLI** | Interactive onboarding, agent chat, gateway mode, cron and memory management |
 
@@ -100,6 +101,19 @@ miqi gateway
 `miqi onboard` now also supports:
 
 - Paper research tool configuration (`tools.papers` provider, API key, limits)
+
+### Desktop Development Preview
+
+MiQi Desktop runs as a local Tauri app with a Python sidecar. Plain Vite mode is useful for frontend work, but it uses mock data and does not connect to the real backend.
+
+```powershell
+cd desktop
+npm install
+npm run sidecar:dev  # build the local sidecar launcher
+npm run tauri dev    # open the native window and launch the Python backend
+```
+
+Use [docs/desktop-frontend-backend-test-runbook.md](docs/desktop-frontend-backend-test-runbook.md) to validate the real frontend/backend path with a live LLM, built-in web search, and paper search before testing optional MCP servers.
 
 ---
 
@@ -316,6 +330,7 @@ This is particularly useful in containerised deployments where secrets are injec
 | `miqi agent` | Start an interactive chat session |
 | `miqi agent -m "<prompt>"` | Send a single prompt and exit |
 | `miqi gateway` | Run the long-running gateway (channels + cron) |
+| `miqi desktop-backend --stdio` | Start the desktop JSON-RPC sidecar backend |
 
 **Status & Diagnostics**
 
@@ -534,6 +549,10 @@ This calls `miqi config mcp add` for every server with recommended timeouts and 
 - [docs/getting-started.md](docs/getting-started.md)
 - [docs/configuration.md](docs/configuration.md)
 - [docs/cli-reference.md](docs/cli-reference.md)
+- [docs/desktop.md](docs/desktop.md)
+- [docs/desktop-architecture.md](docs/desktop-architecture.md)
+- [docs/desktop-design.md](docs/desktop-design.md)
+- [docs/desktop-frontend-backend-test-runbook.md](docs/desktop-frontend-backend-test-runbook.md)
 - [docs/mcp-integration.md](docs/mcp-integration.md)
 - [docs/architecture.md](docs/architecture.md)
 - [docs/memory-system.md](docs/memory-system.md)

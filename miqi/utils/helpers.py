@@ -1,5 +1,6 @@
 """Utility functions for MiQi runtime."""
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +15,15 @@ def ensure_dir(path: Path) -> Path:
 
 
 def get_data_path() -> Path:
-    """Get runtime data directory, preferring ~/.miqi with legacy fallback."""
+    """Get runtime data directory.
+
+    Precedence:
+    1. MIQI_DATA_DIR environment variable (always used if set).
+    2. ~/.miqi with legacy fallback to ~/.assistant.
+    """
+    env_dir = os.getenv("MIQI_DATA_DIR")
+    if env_dir:
+        return ensure_dir(Path(env_dir))
     home = Path.home()
     preferred = home / DEFAULT_DATA_DIR
     legacy = home / LEGACY_DATA_DIR

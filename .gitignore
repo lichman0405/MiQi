@@ -19,7 +19,22 @@ poetry.lock
 .pytest_cache/
 site/
 botpy.log
-tests/
 .ruff_cache/
 featherflow/agent/memory.py.bak
 .miqi/
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Desktop / Tauri generated output
+desktop/node_modules/
+desktop/dist/
+desktop/.vite/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/*
+!desktop/src-tauri/binaries/.gitignore

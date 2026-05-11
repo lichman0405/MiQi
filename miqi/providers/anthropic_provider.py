@@ -27,6 +27,8 @@ class AnthropicProvider(LLMProvider):
     converts them to Anthropic format internally.
     """
 
+    supports_streaming: bool = True
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -265,6 +267,8 @@ class AnthropicProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        *,
+        on_delta=None,
     ) -> LLMResponse:
         original_model = model or self.default_model
         resolved = self._resolve_model(original_model)
@@ -295,6 +299,8 @@ class AnthropicProvider(LLMProvider):
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
+                if on_delta is not None:
+                    return await self._stream_chat(kwargs, on_delta)
                 response = await self._client.messages.create(**kwargs)
                 return self._parse_response(response)
             except Exception as e:
@@ -308,6 +314,120 @@ class AnthropicProvider(LLMProvider):
                 )
 
         return LLMResponse(content="Error calling LLM: retries exhausted", finish_reason="error")
+
+    async def _stream_chat(
+        self,
+        kwargs: dict[str, Any],
+        on_delta,
+    ) -> LLMResponse:
+        """Stream an Anthropic message, buffering deltas and flushing only when
+        the final response has no tool calls.
+
+        Deltas are buffered internally.  If the response ends up containing
+        tool calls, all buffered deltas are silently discarded so no partial
+        text leaks to the UI.  If the response is pure text, deltas are flushed
+        to ``on_delta``.
+        """
+        content_parts: list[str] = []
+        tool_calls: list[ToolCallRequest] = []
+        tool_acc: dict[int, dict[str, Any]] = {}  # block index → {id, name, input_json}
+        stop_reason = "stop"
+        usage: dict[str, int] = {}
+
+        try:
+            stream_ctx = self._client.messages.stream(**kwargs)
+            stream = await stream_ctx.__aenter__()
+        except Exception:
+            # Stream creation failed before any delta was emitted.
+            # Fall back to a blocking call.
+            try:
+                response = await self._client.messages.create(**kwargs)
+                return self._parse_response(response)
+            except Exception as fallback_err:
+                return LLMResponse(
+                    content=f"Error calling LLM: {fallback_err}",
+                    finish_reason="error",
+                )
+
+        try:
+            async for event in stream:
+                if event.type == "content_block_delta":
+                    delta = event.delta
+                    if hasattr(delta, "text") and delta.text:
+                        content_parts.append(delta.text)
+                    elif hasattr(delta, "partial_json") and delta.partial_json:
+                        idx = event.index
+                        acc = tool_acc.setdefault(idx, {"id": "", "name": "", "input_json": ""})
+                        acc["input_json"] += delta.partial_json
+
+                elif event.type == "content_block_start":
+                    block = event.content_block
+                    if block.type == "tool_use":
+                        idx = event.index
+                        tool_acc.setdefault(idx, {
+                            "id": block.id,
+                            "name": block.name,
+                            "input_json": "",
+                        })
+
+                elif event.type == "message_delta":
+                    if event.delta and event.delta.stop_reason:
+                        stop_reason = event.delta.stop_reason
+                    if event.usage:
+                        usage = {
+                            "prompt_tokens": event.usage.input_tokens or 0,
+                            "completion_tokens": event.usage.output_tokens or 0,
+                            "total_tokens": (event.usage.input_tokens or 0) + (event.usage.output_tokens or 0),
+                        }
+        finally:
+            try:
+                await stream_ctx.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+        # Build tool calls from accumulated data
+        for idx in sorted(tool_acc):
+            acc = tool_acc[idx]
+            raw_input = acc.get("input_json", "")
+            try:
+                input_data = json.loads(raw_input) if raw_input else {}
+            except (json.JSONDecodeError, ValueError):
+                input_data = json_repair.loads(raw_input) if raw_input else {}
+            if not isinstance(input_data, dict):
+                input_data = {}
+            tool_calls.append(ToolCallRequest(
+                id=acc.get("id", f"tc_stream_{idx}"),
+                name=acc.get("name", "unknown"),
+                arguments=input_data,
+            ))
+
+        content = "".join(content_parts) or None
+        stop_map = {
+            "end_turn": "stop",
+            "tool_use": "tool_calls",
+            "max_tokens": "length",
+            "stop_sequence": "stop",
+        }
+        finish_reason = stop_map.get(stop_reason, "stop")
+
+        has_tool_calls = bool(tool_calls)
+
+        # Only flush buffered deltas to on_delta if the response is pure
+        # text — no tool calls.
+        if not has_tool_calls:
+            for part in content_parts:
+                try:
+                    await on_delta(part)
+                except Exception:
+                    pass
+
+        return LLMResponse(
+            content=content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            usage=usage,
+            streamed=not has_tool_calls,
+        )
 
     def _parse_response(self, response: Any) -> LLMResponse:
         """Convert an Anthropic Messages response to LLMResponse."""

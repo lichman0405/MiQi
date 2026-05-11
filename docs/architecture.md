@@ -2,12 +2,14 @@
 
 ## System Overview
 
-MiQi follows a **message bus + agent loop + tool system + channel adapters** architecture:
+MiQi follows a **message bus + agent loop + tool system + channel adapters** architecture today. A planned desktop entry point extends this into a three-entry architecture: CLI, gateway, and desktop sidecar.
 
 1. **Channels** receive external messages and publish them to `MessageBus.inbound` (Feishu is wired in the packaged gateway today; other adapter modules are extension points in the repository)
 2. **AgentLoop** consumes messages, builds context (session + memory + skills), and calls the LLM
 3. External capabilities are executed through **ToolRegistry**, either sequentially or concurrently for safe batches
 4. Responses are published to `MessageBus.outbound` and delivered back by channels
+
+The desktop direction is documented in [Desktop](desktop.md), [Desktop Architecture](desktop-architecture.md), and [Desktop Design](desktop-design.md). The desktop app should reuse the Python runtime through a sidecar rather than reimplementing agent behavior in the frontend.
 
 ```
  ┌─────────────────────────────────────────────────────────┐
@@ -50,6 +52,34 @@ MiQi follows a **message bus + agent loop + tool system + channel adapters** arc
 | SQLite session backend | `session/sqlite_store.py` | Optional SQLite+FTS5 backend module shipped in the repository |
 | CLI | `cli/` | Entry point and subcommand modules |
 
+## Planned Desktop Entry Point
+
+MiQi Desktop is planned as a local desktop application built around a Tauri shell and a Python sidecar process. It should add a new runtime entry point without replacing the existing CLI or gateway.
+
+```
+Desktop Window (Tauri + React)
+          │ stdio NDJSON JSON-RPC
+          ▼
+miqi desktop-backend --stdio
+          │
+          ▼
+Application services
+          ├── AgentService / ExecutionManager
+          ├── SessionService
+          ├── WorkspaceService
+          ├── ContextService
+          ├── MemoryService
+          ├── ToolApprovalService
+          └── Tool / MCP / Cron / Heartbeat services
+          │
+          ▼
+Existing AgentLoop + providers + tools + memory
+```
+
+The desktop backend should expose structured JSON-RPC methods and structured runtime events. The existing string-oriented `on_progress` hook can remain for CLI/gateway compatibility, while desktop consumers subscribe to event types such as `RunStarted`, `MessageDelta`, `ToolCallStarted`, `ApprovalRequested`, `SessionChanged`, and `Error`.
+
+The desktop implementation should also separate the user's **project root** from the MiQi **data root**. Existing installations can continue using `agents.defaults.workspace` for both until a separate project root is configured.
+
 ## Data Flow
 
 ```
@@ -75,6 +105,9 @@ Memory:  MemoryStore.record_turn updates short-term ring buffer and long-term sn
 - **Iteration pressure control**: `IterationBudget` injects hints as the loop nears `maxToolIterations`, reducing runaway tool cycles.
 - **Session storage**: `SessionManager` rewrites JSONL session files periodically to keep context size bounded while preserving readable history. The repository also ships an optional SQLite+FTS5 backend module, but the packaged CLI/gateway path still instantiates JSONL sessions.
 - **Embedded advanced helpers**: smart model routing, provider fallback, command approval, and context compression are present as runtime modules; only the always-safe pieces are active in the packaged CLI/gateway defaults today.
+- **Desktop as a third entry point**: desktop work should extract shared runtime construction and application services while preserving the CLI and gateway behavior.
+- **Structured events for UI**: desktop needs typed events for streaming, tool state, approvals, cancellation, session changes, memory changes, and errors. CLI/gateway can keep rendering string progress.
+- **Explicit approval surface**: dangerous local actions should be visible and user-approved in desktop, using `agent/command_approval.py` as the detection source of truth.
 
 ## Group Chat Message Filtering
 

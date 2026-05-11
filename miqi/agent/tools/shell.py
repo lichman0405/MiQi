@@ -4,7 +4,7 @@ import asyncio
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable, Optional
 
 from miqi.agent.tools.base import Tool
 
@@ -44,6 +44,9 @@ class ExecTool(Tool):
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
+        # Set by AgentService._wire_approval when desktop backend is active.
+        # Signature: (command, pattern_description, session_key, execution_id, tool_call_id) -> decision str
+        self.approval_fn: Callable[..., Awaitable[str]] | None = None
 
     @property
     def name(self) -> str:
@@ -76,6 +79,12 @@ class ExecTool(Tool):
         if guard_error:
             return guard_error
 
+        # Approval check for dangerous commands (desktop IPC path)
+        approval_result = await self._check_approval(command, **kwargs)
+        if approval_result is not None:
+            return approval_result
+
+        process = None
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -91,14 +100,11 @@ class ExecTool(Tool):
                     timeout=self.timeout
                 )
             except asyncio.TimeoutError:
-                process.kill()
-                # Wait for the process to fully terminate so pipes are
-                # drained and file descriptors are released.
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
+                await self._terminate_process(process)
                 return f"Error: Command timed out after {self.timeout} seconds"
+            except asyncio.CancelledError:
+                await self._terminate_process(process)
+                raise
 
             output_parts = []
 
@@ -122,8 +128,31 @@ class ExecTool(Tool):
 
             return result
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             return f"Error executing command: {str(e)}"
+
+    @staticmethod
+    async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+        """Terminate/kill a subprocess and wait for it to exit."""
+        if process.returncode is not None:
+            return
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(process.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
 
     def _build_safe_env(self) -> dict[str, str]:
         """Return a sanitised copy of os.environ with credential variables removed.
@@ -189,4 +218,61 @@ class ExecTool(Tool):
                 if p.is_absolute() and cwd_path not in p.parents and p != cwd_path:
                     return "Error: Command blocked by safety guard (path outside working dir)"
 
+        return None
+
+    async def _check_approval(self, command: str, **kwargs: Any) -> str | None:
+        """Check if a dangerous command requires approval.
+
+        Returns None if the command is safe or approved, or a blocking
+        message string if denied.  When ``approval_fn`` is set (desktop
+        mode), the flow is:
+
+          1. detect_dangerous_command() → check if dangerous
+          2. If dangerous and approval_fn set → await approval_fn()
+          3. If decision is "deny" → return blocking message
+          4. If decision is "once"/"session"/"always" → return None (proceed)
+
+        When approval_fn is NOT set (CLI/gateway), dangerous commands
+        pass through and the existing CLI prompt mechanism handles it
+        (``command_approval.check_dangerous_command``).
+        """
+        from miqi.agent.command_approval import (
+            detect_dangerous_command,
+            is_approved,
+        )
+
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        if not is_dangerous:
+            return None
+
+        # Check session/permanent approvals
+        session_key = kwargs.get("_session_key", "")
+        if pattern_key and is_approved(session_key, pattern_key):
+            return None
+
+        # Desktop IPC path: use async approval flow
+        if self.approval_fn is not None:
+            execution_id = kwargs.get("_execution_id", "")
+            tool_call_id = kwargs.get("_tool_call_id", "")
+            try:
+                decision = await self.approval_fn(
+                    command, description or "", session_key,
+                    execution_id, tool_call_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return f"Error: Approval check failed: {exc}"
+
+            if decision == "deny":
+                return (
+                    f"BLOCKED: User denied this potentially dangerous command "
+                    f"(matched '{description}' pattern). Do NOT retry this command."
+                )
+            # "once", "session", "always" — proceed with execution
+            return None
+
+        # CLI/gateway path: the existing check_dangerous_command handles
+        # prompting.  For non-interactive contexts (gateway, cron), it
+        # auto-approves.  This matches the existing behaviour.
         return None

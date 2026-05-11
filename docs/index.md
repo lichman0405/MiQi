@@ -24,6 +24,7 @@ MiQi is a compact AI agent runtime designed for developers who want a self-hoste
 | **MCP Integration** | Connect any MCP-compatible tool server; seven domain-specific MCP servers bundled |
 | **Memory** | RAM-first snapshots, self-improvement lessons, and workspace-local JSONL session history |
 | **Agent Runtime** | Concurrent tool execution for safe batches, iteration-budget safeguards, queue notifications, and MCP heartbeat progress |
+| **Desktop** | Tauri 2 native desktop shell with React UI, Python sidecar runtime, stdio JSON-RPC IPC, sessions, files, tools, memory, cron, heartbeat, context, and settings surfaces |
 | **Extensibility** | MCP server integration, skill files, custom provider plugins |
 | **CLI** | Interactive onboarding, agent chat, gateway mode, cron and memory management |
 
@@ -32,6 +33,7 @@ MiQi is a compact AI agent runtime designed for developers who want a self-hoste
 - :material-rocket-launch: **[Getting Started](getting-started.md)** — Installation, quick start, and first run
 - :material-cog: **[Configuration](configuration.md)** — Config file reference and environment variables
 - :material-console: **[CLI Reference](cli-reference.md)** — All commands, tools, and their options
+- :material-monitor: **[Desktop](desktop.md)** — Native desktop setup, sidecar runtime, and MVP scope
 - :material-puzzle: **[MCP Integration](mcp-integration.md)** — Connect bundled and custom MCP servers
 - :material-sitemap: **[Architecture](architecture.md)** — System design and module breakdown
 - :material-brain: **[Memory System](memory-system.md)** — RAM-first memory architecture

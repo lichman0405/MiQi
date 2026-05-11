@@ -1,6 +1,7 @@
 """Configuration loading utilities."""
 
 import json
+import os
 from pathlib import Path
 
 from loguru import logger
@@ -9,7 +10,15 @@ from miqi.config.schema import Config
 
 
 def get_config_path() -> Path:
-    """Get default config path, preferring ~/.miqi/config.json with legacy fallback."""
+    """Get default config path.
+
+    Precedence:
+    1. MIQI_CONFIG_PATH environment variable (always used if set).
+    2. ~/.miqi/config.json with legacy fallback to ~/.assistant/config.json.
+    """
+    env_path = os.getenv("MIQI_CONFIG_PATH")
+    if env_path:
+        return Path(env_path)
     home = Path.home()
     preferred = home / ".miqi" / "config.json"
     legacy = home / ".assistant" / "config.json"
@@ -86,3 +95,30 @@ def _migrate_config(data: dict) -> dict:
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
     return data
+
+
+def save_config_allowlist(patterns: set[str], config_path: Path | None = None) -> None:
+    """Persist the permanent command-approval allowlist into config.
+
+    Reads the existing config, updates
+    ``agents.commandApproval.allowlist`` with the given patterns, and
+    writes it back.  Best-effort — failures are logged, not raised.
+    """
+    try:
+        path = config_path or get_config_path()
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data = {}
+
+        agents = data.setdefault("agents", {})
+        approval = agents.setdefault("commandApproval", {})
+        approval["allowlist"] = sorted(patterns)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        path.chmod(0o600)  # Restrict to owner only — config contains API keys
+    except Exception as exc:
+        logger.warning("Could not save allowlist to config: {}", exc)

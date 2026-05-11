@@ -215,6 +215,7 @@ class AgentLoop:
         )
 
         self._running = False
+        self._current_execution_id: str = ""  # set by AgentService before each run
         self._mcp_servers = mcp_servers or {}
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
@@ -256,6 +257,47 @@ class AgentLoop:
             )
 
         self._register_default_tools()
+
+    def set_workspace(self, new_root: Path) -> None:
+        """Switch the project root at runtime (e.g. via workspace.open RPC).
+
+        Updates all components that hold a workspace reference:
+        AgentLoop, ToolRegistry, file tools, ExecTool, SubagentManager,
+        ContextBuilder, and MemoryStore.
+        """
+        new_root = Path(new_root).resolve()
+        self.workspace = new_root
+
+        # File tools
+        allowed_dir = new_root if self.restrict_to_workspace else None
+        for name in ("read_file", "write_file", "edit_file", "list_dir"):
+            tool = self.tools.get(name)
+            if tool is not None:
+                tool._workspace = new_root
+                tool._allowed_dir = allowed_dir
+
+        # ExecTool
+        exec_tool = self.tools.get("exec")
+        if exec_tool is not None:
+            exec_tool.working_dir = str(new_root)
+
+        # PaperDownloadTool
+        paper_dl = self.tools.get("paper_download")
+        if paper_dl is not None and hasattr(paper_dl, "_workspace"):
+            paper_dl._workspace = new_root
+
+        # SubagentManager
+        self.subagents.workspace = new_root
+
+        # ContextBuilder + SkillsLoader
+        self.context.workspace = new_root
+        if hasattr(self.context, "skills"):
+            self.context.skills = self.context.skills.__class__(new_root)
+
+        # MemoryStore keeps its data root (MiQi data dir), not project root.
+        # It only uses workspace for short-term memory files relative to the
+        # project, so we leave it unchanged — sessions/memory/cron stay in
+        # the MiQi data root as designed.
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -493,6 +535,7 @@ class AgentLoop:
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
         session_key: str = "",
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
         messages = initial_messages
@@ -564,6 +607,7 @@ class AgentLoop:
                 model=_model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                on_delta=on_content_delta,
             )
 
             if response.has_tool_calls:
@@ -666,6 +710,9 @@ class AgentLoop:
                             tool_call.name,
                             tool_call.arguments,
                             _on_progress=_mcp_on_progress,
+                            _session_key=session_key,
+                            _tool_call_id=tool_call.id,
+                            _execution_id=self._current_execution_id,
                         )
                         # Record tool feedback for self-improvement lessons
                         if session_key and isinstance(result, str):
@@ -893,6 +940,7 @@ class AgentLoop:
         msg: InboundMessage,
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         # System messages: parse origin from chat_id ("channel:chat_id")
@@ -917,6 +965,7 @@ class AgentLoop:
             try:
                 final_content, _, all_msgs = await self._run_agent_loop(
                     messages, session_key=key,
+                    on_content_delta=on_content_delta,
                 )
             finally:
                 for _gw in self._mcp_gateways:
@@ -1029,6 +1078,7 @@ class AgentLoop:
             final_content, _, all_msgs = await self._run_agent_loop(
                 initial_messages, on_progress=on_progress or _bus_progress,
                 session_key=key,
+                on_content_delta=on_content_delta,
             )
         finally:
             for _gw in self._mcp_gateways:
@@ -1144,11 +1194,12 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Process a message directly (for CLI or cron usage)."""
         await self._connect_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        response = await self._process_message(msg, session_key=session_key, on_progress=on_progress)
+        response = await self._process_message(msg, session_key=session_key, on_progress=on_progress, on_content_delta=on_content_delta)
         return response.content if response else ""
 
     @staticmethod

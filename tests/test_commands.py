@@ -175,8 +175,9 @@ def test_cron_run_passes_runtime_configs(monkeypatch, tmp_path):
     captured: dict = {}
 
     class FakeCronService:
-        def __init__(self, _store_path):
+        def __init__(self, _store_path, job_timeout=86400):
             self.on_job = None
+            self.job_timeout = job_timeout
 
         async def run_job(self, _job_id, force=False):
             return bool(force)

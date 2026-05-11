@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Documentation
+- Added desktop MVP documentation for setup, architecture, design, and frontend/backend validation:
+  - `docs/desktop.md`
+  - `docs/desktop-architecture.md`
+  - `docs/desktop-design.md`
+  - `docs/desktop-frontend-backend-test-runbook.md`
+- Updated README with native desktop development commands and the real Tauri sidecar test path.
 - Added uv installation instructions to README, getting-started, developer-guide, and contributing docs; uv is the recommended install method, pip retained as fallback.
 - Updated `maxTokens` default from `16000` to `8192` in `docs/configuration.md` to match code.
 - Added GitHub Copilot (OAuth) to README LLM Providers feature list.
@@ -17,6 +23,20 @@ All notable changes to this project will be documented in this file.
   - clarified that SQLite session storage, provider fallback chains, command approval, and smart routing exist as shipped modules/helpers but are not all enabled by default in the packaged CLI/gateway path
 
 ### Added
+- Added the MiQi Desktop MVP:
+  - Tauri 2 native shell under `desktop/src-tauri/`.
+  - React + TypeScript frontend under `desktop/src/`.
+  - Python sidecar entry point `miqi desktop-backend --stdio`.
+  - newline-delimited JSON-RPC over stdio between the Tauri shell and Python runtime.
+  - sidecar launcher source under `desktop/src-tauri/sidecars/miqi-desktop-backend/` plus `npm run sidecar:dev`.
+  - desktop smoke script `scripts/desktop_stdio_smoke.py`.
+- Added shared runtime services for desktop execution and IPC:
+  - shared runtime factory for CLI, gateway, and desktop backend construction.
+  - structured runtime event emitter and event models.
+  - `AgentService`, `ExecutionManager`, and desktop approval service.
+  - desktop session, workspace, context, and memory service wrappers.
+  - RPC handlers for app, config, workspace, context, session, chat, tools, MCP status, memory, cron, and heartbeat operations.
+- Added desktop UI surfaces for chat, session management, file/workspace inspection, context/activity inspector, memory, cron, heartbeat, tools, MCP status, and settings.
 - Added `paper-research` skill (`miqi/skills/paper-research/SKILL.md`):
   - Full workflow: `paper_search` → `paper_download` → `translate_pdf` → summarize with references.
   - Covers scheduled briefing scenarios (cron + feishu delivery).
@@ -31,6 +51,8 @@ All notable changes to this project will be documented in this file.
   - Defines sacred directories (memory/, skills/, sessions/, system .md files) that are never touched.
 
 ### Changed
+- Refactored CLI and gateway runtime setup to use the shared runtime factory while preserving existing behavior.
+- Documented the distinction between Vite mock mode and the real Tauri sidecar path for desktop testing.
 - Updated `cron` skill (`miqi/skills/cron/SKILL.md`):
   - Corrected timezone fallback documentation: without `tz`, cron expressions are now evaluated in **UTC** (not server local time).
   - Updated `at` mode examples to always include timezone offset (e.g. `+08:00`) or explicit `tz=`.
@@ -42,6 +64,7 @@ All notable changes to this project will be documented in this file.
   - `tz`: extended to apply to both `cron_expr` and `at` modes.
 
 ### Fixed
+- Fixed desktop state refresh contracts for memory and cron mutations: memory panels refresh on `MemoryChanged`, cron panels refresh on `CronJobChanged`, and MCP status remains an explicit manual refresh path until a stable backend event source exists.
 - Fixed `max_tokens` default of 16000 exceeding DeepSeek API maximum (8192 output tokens): lowered `AgentDefaults.max_tokens` back to 8192. After migration from litellm (which auto-capped per model) to direct SDK calls (which do not), the previous 16000 default caused 400 BadRequest errors on DeepSeek (`config/schema.py`).
 - Fixed `_match_provider()` using bare `api_key` truthiness check, preventing `is_local` providers (vLLM, Ollama Local) from matching when they use `api_base` instead of `api_key`: replaced with `_is_configured()` helper that checks both `api_key` and `api_base` (`config/schema.py`).
 - Fixed `build_provider()` not passing `provider_name` and `default_model` to fallback-chain provider constructors, causing fallback providers to use wrong endpoints and model names (`config/schema.py`).

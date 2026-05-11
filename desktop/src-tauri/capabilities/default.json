@@ -1,0 +1,20 @@
+{
+  "identifier": "default",
+  "description": "Minimal capabilities for MiQi desktop app: sidecar spawn and stdin write only.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/miqi-desktop-backend",
+          "sidecar": true,
+          "args": ["--stdio"]
+        }
+      ]
+    },
+    "shell:allow-stdin-write",
+    "shell:allow-kill"
+  ]
+}

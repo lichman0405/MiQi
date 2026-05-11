@@ -32,6 +32,8 @@ class OpenAIProvider(LLMProvider):
     No litellm dependency — uses openai.AsyncOpenAI directly.
     """
 
+    supports_streaming: bool = True
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -207,6 +209,8 @@ class OpenAIProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        *,
+        on_delta=None,
     ) -> LLMResponse:
         original_model = model or self.default_model
         resolved = self._resolve_model(original_model)
@@ -231,9 +235,15 @@ class OpenAIProvider(LLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        # Use streaming when on_delta callback is provided
+        if on_delta is not None:
+            kwargs["stream"] = True
+
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
+                if on_delta is not None:
+                    return await self._stream_chat(kwargs, on_delta)
                 response = await self._client.chat.completions.create(**kwargs)
                 return self._parse_response(response)
             except Exception as e:
@@ -247,6 +257,129 @@ class OpenAIProvider(LLMProvider):
                 )
 
         return LLMResponse(content="Error calling LLM: retries exhausted", finish_reason="error")
+
+    async def _stream_chat(
+        self,
+        kwargs: dict[str, Any],
+        on_delta,
+    ) -> LLMResponse:
+        """Stream a chat completion, buffering deltas and flushing only when
+        the final response has no tool calls.
+
+        Deltas are buffered internally.  If the response ends up containing
+        tool calls (streamed or fallback JSON), all buffered deltas are
+        silently discarded so no raw JSON or partial text leaks to the UI.
+        If the response is pure text, deltas are flushed to ``on_delta``.
+        """
+        content_parts: list[str] = []
+        tool_calls_acc: dict[int, dict[str, Any]] = {}  # index → {id, name, arguments_str}
+        finish_reason = "stop"
+        usage: dict[str, int] = {}
+        reasoning_parts: list[str] = []
+
+        try:
+            stream = await self._client.chat.completions.create(**kwargs)
+        except Exception:
+            # Stream creation failed before any delta was emitted.
+            # Fall back to a blocking call so the caller gets a proper
+            # LLMResponse instead of a half-baked error string.
+            kwargs_no_stream = {k: v for k, v in kwargs.items() if k != "stream"}
+            try:
+                response = await self._client.chat.completions.create(**kwargs_no_stream)
+                return self._parse_response(response)
+            except Exception as fallback_err:
+                return LLMResponse(
+                    content=f"Error calling LLM: {fallback_err}",
+                    finish_reason="error",
+                )
+
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            # Text content delta — buffer only, do NOT flush yet
+            if delta.content:
+                content_parts.append(delta.content)
+
+            # Reasoning content delta (DeepSeek R1 etc.)
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                reasoning_parts.append(delta.reasoning_content)
+
+            # Tool call deltas
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    acc = tool_calls_acc.setdefault(idx, {
+                        "id": "",
+                        "name": "",
+                        "arguments": "",
+                    })
+                    if tc_delta.id:
+                        acc["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            acc["name"] = tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            acc["arguments"] += tc_delta.function.arguments
+
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+            # Usage from final chunk (OpenAI returns usage in the last chunk)
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage = {
+                    "prompt_tokens": chunk.usage.prompt_tokens or 0,
+                    "completion_tokens": chunk.usage.completion_tokens or 0,
+                    "total_tokens": chunk.usage.total_tokens or 0,
+                }
+
+        # Build final response
+        content = "".join(content_parts) or None
+        tool_calls: list[ToolCallRequest] = []
+        for idx in sorted(tool_calls_acc):
+            acc = tool_calls_acc[idx]
+            args_str = acc.get("arguments", "")
+            try:
+                args = json.loads(args_str) if args_str else {}
+            except (json.JSONDecodeError, ValueError):
+                args = json_repair.loads(args_str) if args_str else {}
+            if not isinstance(args, dict):
+                args = {}
+            tool_calls.append(ToolCallRequest(
+                id=acc.get("id", f"tc_stream_{idx}"),
+                name=acc.get("name", "unknown"),
+                arguments=args,
+            ))
+
+        # Fallback: parse tool call from content if no streamed tool_calls
+        if not tool_calls and isinstance(content, str):
+            fallback = self._parse_tool_call_from_content(content)
+            if fallback:
+                tool_calls.append(fallback)
+
+        reasoning_content = "".join(reasoning_parts) or None
+
+        has_tool_calls = bool(tool_calls)
+
+        # Only flush buffered deltas to on_delta if the response is pure
+        # text — no tool calls (streamed or fallback JSON).
+        if not has_tool_calls:
+            for part in content_parts:
+                try:
+                    await on_delta(part)
+                except Exception:
+                    pass  # best-effort
+
+        return LLMResponse(
+            content=content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason or "stop",
+            usage=usage,
+            reasoning_content=reasoning_content,
+            streamed=not has_tool_calls,
+        )
 
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse an OpenAI-compatible response object into LLMResponse."""

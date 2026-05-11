@@ -790,6 +790,9 @@ register_management_commands(
     print_agent_response=_print_agent_response,
 )
 
+from miqi.cli.desktop_cmd import register_desktop_command
+register_desktop_command(app, make_provider=_make_provider)
+
 from miqi.cli.config_cmd import register_config_commands
 register_config_commands(app, console=console)
 
