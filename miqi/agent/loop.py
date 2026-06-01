@@ -47,6 +47,7 @@ from miqi.config.schema import (
     ChannelsConfig,
     ExecToolConfig,
     PapersToolConfig,
+    PievoConfig,
     SmartRoutingConfig,
     WebToolsConfig,
 )
@@ -148,6 +149,7 @@ class AgentLoop:
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
+        pievo_config: PievoConfig | None = None,
         channels_config: ChannelsConfig | None = None,
         smart_routing_config: SmartRoutingConfig | None = None,
         enable_context_compression: bool = False,
@@ -285,6 +287,8 @@ class AgentLoop:
         self._approval_callback = approval_callback
         self._session_key = session_key
         self._mcp_servers = mcp_servers or {}
+        self._pievo_config = pievo_config or PievoConfig()
+        self._pievo_orchestrator = None  # 惰性创建
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
         self._mcp_connecting = False
@@ -417,6 +421,58 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # ── PiEvo（可选，默认关闭）──
+        if self._pievo_config.enabled:
+            try:
+                from miqi.agent.strategies.pievo.engine import PiEvoEngine
+                from miqi.agent.strategies.pievo.agents.phe_orchestrator import PHEOrchestrator
+                from miqi.agent.strategies.pievo.adapters.llm_adapter import create_llm_adapter
+                from miqi.agent.strategies.pievo.adapters.tool_adapter import create_tool_adapter
+                from miqi.agent.tools.pievo import PievoRunTool, PievoStatusTool, PievoStopTool
+
+                # 惰性引擎工厂
+                cfg = self._pievo_config
+
+                def _make_engine():
+                    return PiEvoEngine(
+                        llm_call=create_llm_adapter(
+                            provider_chat=self.provider.chat,
+                            model=self.model,
+                        ),
+                        tool_executor=create_tool_adapter(tool_registry=self.tools),
+                        task="",
+                        output_dir=str(self.workspace / "pievo_output"),
+                        sigma=cfg.sigma,
+                        anomaly_threshold=cfg.anomaly_threshold,
+                        warm_up_rounds=cfg.warm_up_rounds,
+                        new_principle_prior_mass=cfg.new_principle_prior_mass,
+                        monte_carlo_samples=cfg.monte_carlo_samples,
+                    )
+
+                self._pievo_orchestrator = PHEOrchestrator(
+                    engine_factory=_make_engine,
+                )
+
+                self.tools.register(PievoRunTool(
+                    orchestrator=self._pievo_orchestrator,
+                    workspace=str(self.workspace),
+                ))
+                self.tools.register(PievoStatusTool(
+                    orchestrator=self._pievo_orchestrator,
+                ))
+                self.tools.register(PievoStopTool(
+                    orchestrator=self._pievo_orchestrator,
+                ))
+
+            except ImportError as e:
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.warning(
+                    f"PiEvo enabled but dependencies missing: {e}. "
+                    f"Install with: pip install miqi[pievo]"
+                )
+                self._pievo_config.enabled = False
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy with exponential backoff)."""
