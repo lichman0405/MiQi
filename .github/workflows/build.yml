@@ -1,0 +1,82 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [electronUI]
+    tags: [v*]
+  pull_request:
+    branches: [electronUI]
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install Python dependencies
+        run: uv sync --all-extras
+
+      - name: Build miqi-bridge.exe
+        run: uv run pyinstaller miqi.spec
+
+      - name: Install Electron dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build Electron app
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Package Electron app
+        working-directory: apps/desktop
+        run: npx electron-builder --win --publish never
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: miqi-desktop-build
+          path: dist-new/
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-new/*.exe
+            dist-new/*.zip
+          name: Release ${{ github.ref_name }}
+          body: |
+            ## MiQi Desktop ${{ github.ref_name }}
+
+            Automated release from GitHub Actions pipeline.
+
+            **Downloads:**
+            - Windows Installer: `MiQi Desktop Setup *.exe`
+            - Windows Portable: `MiQi Desktop *.exe`
+            - Windows Zip: `MiQi Desktop *.zip`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

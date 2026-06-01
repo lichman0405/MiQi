@@ -3,6 +3,159 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+### Fixed (2026-05-25)
+- **Strip `<think>` reasoning blocks from assistant messages** (`ChatConsole.tsx`):
+  - Added `stripThinkBlocks()` helper that removes `</think>` blocks (case-insensitive, multi-line) before passing content to `MarkdownContent`/`ReactMarkdown`
+
+### Fixed (2026-05-22)
+- **Fixes and refactor for the "Merge Changes" button**:
+  - Fixed silent snapshot failures (exceptions in `_write_snapshot_to` were swallowed)
+  - Fixed merge incorrectly deleting newly created files (unlinking files that were created when the snapshot was empty)
+  - Fixed files reappearing after switching sessions (`SessionManager.save` append-only mode prevented `_tool_hint` changes from being persisted)
+  - Refactored sidebar file tracking: moved `_tool_hint` out of `conversation.jsonl` into a separate `tracked_files.json`; accept/revert now only remove JSON entries without rewriting conversation history
+- **SkillHub CSP and file extension fixes**:
+  - Fixed CSP in `index.html` blocking fetch requests to `https://skills.sixiangjia.de` — added to `connect-src`
+  - Fixed `skills_create` and `skills_upload` in `bridge/server.py` writing `skill.yml` instead of `SKILL.md`, causing installed skills to be invisible to the `SkillsLoader`
+
+### Added (2026-05-22)
+- **SkillHub registry integration** (`apps/desktop/src/renderer/features/skills/SkillHubPage.tsx`):
+  - New "SkillHub" tab in the Skills page, alongside the existing "本地技能" (Local Skills) tab
+  - Browsing: loads the full skill index from `https://skills.sixiangjia.de/index.json` and displays skills in a card grid
+  - Search: debounced (300ms) keyword search via `/api/search?q=<keyword>`
+  - One-click install: fetches `SKILL.md` from the registry and writes it to the workspace skills directory via the existing `skills.upload` IPC channel
+  - Installed status: already-installed skills show an "已安装" (Installed) badge; loading and error states have inline feedback
+- **Conversation archiving**:
+  - Added an archive button on the right side of each conversation in the sidebar (visible on hover); archived conversations are hidden from the list
+  - Added an "Archived" tab in Settings to view, restore, and permanently delete archived conversations
+  - Implemented via `.archived` marker files with zero runtime overhead
+
+### Added (2026-05-20)
+- **SetupWizard WSL2 Installation Guide Steps**:
+  - Added `wsl2` step to wizard flow (environment → wsl2 → provider) to guide Windows users through WSL2 installation
+  - Automatically detects WSL2 installation status: installed/version/distribution/running
+  - One-click installation when not installed (UAC elevation) + manual installation instructions
+  - Guides `wsl --install -d Ubuntu` when WSL is installed but no distribution exists
+  - Prompts upgrade command for WSL1; automatically skips on non-Windows
+  - Added IPC channels `wsl:check` / `wsl:install` and `WslCheckResult` type
+- **Settings Page "Rerun Configuration Wizard" Button**:
+  - Added "Reconfigure" section at the bottom of Settings → General tab, click to reopen SetupWizard
+  - Controls AppShell `needsSetup` state via React props callback chain, no additional IPC channel required
+
+### Added (2026-05-18)
+- **Experience panel** (`apps/desktop/src/renderer/features/experience/`):
+  - `ExperiencePage` component: Facts / Rules / History three tabs
+  - `ExperienceStore` unified read interface, consolidating facts/rules/traces data
+  - Experience IPC bridge handlers: `experience:list` / `delete` / `toggle` / `search`
+- **MCPs management page** (`apps/desktop/src/renderer/features/mcps/`):
+  - `MCPsPage` component: MCP service list with add/edit/delete actions
+  - MCP list/upsert/delete IPC and bridge handlers
+- **Skills CRUD**:
+  - Desktop Skills page: create / upload / delete operations
+  - `skill_manage` tool: agents can create, view, modify, and archive workspace skills
+  - `skill_curator`: LLM-driven skill lifecycle management, automatically archives stale skills
+- **Session management improvements**:
+  - Session directory restructuring: each session stored in its own directory
+  - Session-scoped working directory: file writes isolated to the current session directory
+  - Automatically add `sessions/` to `.gitignore`
+  - Session title support: sidebar shows custom titles
+- **Trace task tracking system**:
+  - Task Graph git-like self-improvement system (`miqi/agent/trace/`)
+  - Full trace lifecycle: `trace_begin` → `record_step` → `trace_end`
+  - CLI `miqi trace` command: `log` / `show` / `search` / `export` / `import`
+  - Semantic search: vector similarity search based on `fastembed`
+  - Context injection: automatically inject similar historical tasks into the system prompt
+  - Nudge system: periodic reminders to agents to close open tasks
+- **UI improvements**:
+  - Settings page consolidation: providers / channels / approvals / cron merged into tabs
+  - Sidebar improvements: session status filters, tracked file preview
+  - Light theme color palette (WorkBench style)
+  - Chat Console: session title, new chat button, context menu
+  - Right-click context menus for chat / sessions / workspace / memory pages
+
+### Added (2026-05-15)
+- **Task Graph — git-like agent self-improvement system** (`miqi/agent/trace/`):
+  - `TraceStore`: SQLite WAL-backed storage at `{workspace}/traces/TRACES.sqlite` with FTS5 full-text index and optional BLAKE3 content-addressed hashing (`miqi/agent/trace/store.py`).
+  - `TaskTrace` / `TaskStep` data model with `trace_hash`, `goal`, `tool_calls`, `outcome`, `outcome_notes`, `embedding`, `parent_hash`, and `session_id` fields (`miqi/agent/trace/model.py`).
+  - `Embedder`: lazy-loaded local embeddings via `fastembed` (`intfloat/multilingual-e5-small`, 384-dim, ONNX); cosine-similarity semantic search; graceful FTS5 fallback when `fastembed` is unavailable (`miqi/agent/trace/embedder.py`).
+  - Three new agent tools: `task_begin` (open a trace), `task_end` (close with outcome + notes, returns similar historical traces), `trace_search` (semantic/FTS5 search of task history) (`miqi/agent/tools/task_trace.py`).
+  - Context injection: up to 3 similar historical traces are prepended to `build_system_prompt()` when cosine similarity ≥ 0.65 (`miqi/agent/context.py`).
+  - Nudge system: every `trace_nudge_interval` turns (default 8), a system message reminds the agent to call `task_end` if a task is open (`miqi/agent/loop.py`).
+  - Auto-close: open tasks are closed as `partial` on `AgentLoop.stop()` (process shutdown) and on `/new` session reset (`miqi/agent/loop.py`).
+  - Legacy lesson migration utility: converts `LESSONS.jsonl` entries to minimal `TaskTrace` records idempotently (`miqi/agent/trace/migrate.py`).
+  - CLI sub-command `miqi trace` with `log`, `show`, `search`, `export`, `import` commands (`miqi/cli/trace_cmd.py`, `miqi/cli/commands.py`).
+  - Six new config fields in `AgentSelfImprovementConfig`: `trace_enabled`, `embedding_model`, `trace_inject_top_k`, `trace_similarity_threshold`, `trace_nudge_interval`, `lessons_legacy_inject_enabled` (`miqi/config/schema.py`).
+  - Optional dependency group `[trace]`: `fastembed>=0.6.0`, `numpy>=1.24.0`, `blake3>=0.4.0` (`pyproject.toml`).
+- **`task_begin` / `task_end` / `trace_search` tool concurrency classification**: `trace_search` added to `_PARALLEL_SAFE_TOOLS`; `task_begin` and `task_end` added to `_PATH_SCOPED_TOOLS` (`miqi/agent/tools/registry.py`).
+- **`execute_concurrent` `default_kwargs` forwarding**: added `default_kwargs` parameter to `ToolRegistry.execute_concurrent()` so `session_id` is correctly propagated to trace tools in the parallel dispatch path (`miqi/agent/tools/registry.py`).
+
+### Fixed (2026-05-15)
+- **`/new` session reset**: `session.clear()` was missing after successful archival and open-task auto-close; stale messages persisted into the new session (`miqi/agent/loop.py`, fix commit `347e9b5`).
+- **Legacy lesson tests**: two tests in `test_tool_validation.py` assumed `record_tool_feedback()` / `record_user_feedback()` write lessons by default; they now explicitly opt in with `lessons_legacy_inject_enabled=True` to match the new Phase 5 kill-switch default (`tests/test_tool_validation.py`, fix commit `8b7e42a`).
+
+### Changed (2026-05-15)
+- **Legacy lesson injection disabled by default**: `MemoryStore` now defaults to `lessons_legacy_inject_enabled=False`; the `## Lessons` block is no longer included in `get_memory_context()` output unless explicitly opted in. Lesson write paths (`record_tool_feedback`, `record_user_feedback`) are gated by the same flag. Existing `LESSONS.jsonl` data is preserved on disk (`miqi/agent/memory/store.py`).
+
+---
+
+### Added (2026-05-14)
+- **Memory tool** (`miqi/agent/tools/memory.py`): agent can now explicitly read/write/append long-term memory via the `memory` tool.
+- **`session_search` tool** (`miqi/agent/tools/session_search.py`): FTS5-backed cross-session recall; lets the agent retrieve relevant past conversation snippets by natural language query.
+- **`skill_manage` tool** (`miqi/agent/tools/skill_manage.py`): agent can create, view, patch, and archive workspace skills.
+- **Nudge system**: periodic system-message reminders prompt the agent to persist memory and skills; interval configurable via `self_improvement.nudge_interval` (`miqi/agent/loop.py`).
+- **System-prompt guidance** for memory, skills, and `session_search` tools injected into every turn (`miqi/agent/context.py`).
+- **Skill curator** (`miqi/agent/memory/skill_curator.py`): LLM-driven lifecycle management — auto-archives stale skills after configurable threshold.
+- **Lesson lifecycle management** (`miqi/agent/memory/lessons.py`): lessons now track `state` (`active` / `stale` / `archived`); auto-transition based on `lesson_stale_days` / `lesson_archive_days` config fields.
+- **Lesson unlearn button and state badge** in MemoryPage desktop UI (`apps/desktop/src/renderer/features/memory/MemoryPage.tsx`).
+
+### Added
+- **Sidebar redesign**: Added session status filters to sidebar; introduced tracked file parsing and preview panel in chat console; refactored styling to use inline CSS variables over Tailwind arbitrary values; added debug logging for bridge stderr and runtime log flow (`apps/desktop/src/renderer/components/Sidebar.tsx`, `apps/desktop/src/renderer/features/chat/ChatConsole.tsx`).
+- **Python backend hot reload**: Added automatic hot reload for Python backend code changes. When running in development mode, changes to `.py` files in the `miqi/` directory automatically trigger a bridge restart (`apps/desktop/src/main/bridge.ts`).
+- **File diff and revert functionality**: Added file snapshot system that saves original content before first write, enabling non-git diff comparison and revert operations (`miqi/bridge/server.py`).
+- **Merge all changes**: Implemented merge functionality for all file changes with file tracking (`miqi/bridge/server.py`).
+- **Bundled bridge executable support**: Added support for packaging `miqi-bridge.exe` with Electron app, enabling standalone desktop deployment without requiring Python installation (`apps/desktop/src/main/bridge.ts`, `apps/desktop/electron-builder.yml`).
+- **Global right-click context menu**: Added to chat, sessions, workspace, and memory pages (`apps/desktop/src/renderer/components/ContextMenu.tsx`, `apps/desktop/src/main/index.ts`).
+
+### Changed
+- Updated README: Rewrote for MiQi Desktop with English content and added Chinese translation (`README.md`, `README_zh.md`).
+- Adjusted code formatting: Set printWidth to 80 and reformatted code (`apps/desktop/.prettierrc`).
+
+### Fixed
+- Fixed file operation tool hint truncation: Skip truncation for file operation tool hints to preserve full file paths (`miqi/agent/loop.py`).
+- Fixed chat input alignment: Adjusted chat input alignment and line height for better visual appearance (`apps/desktop/src/renderer/features/chat/ChatInput.tsx`).
+- Fixed IPC bridge startup: Ensured bridge is started before IPC calls and improved accessibility (`apps/desktop/src/renderer/contexts/RuntimeContext.tsx`).
+
+### Documentation
+- Added documentation for MiQi Desktop app features and development setup (`README.md`).
+
+
+
+### Added
+- Added **Agent 配置** step (step 4) to Setup Wizard: lets first-time users set Agent name, workspace directory (with Browse button), and optional Brave Search API key before finalising setup (`apps/desktop/src/renderer/features/setup/SetupWizard.tsx`).
+- Added finish screen summary card showing configured provider, agent name, workspace, and web-search state before saving (`apps/desktop/src/renderer/features/setup/SetupWizard.tsx`).
+- Expanded `CONFIG_WRITE_INITIAL` IPC handler to write `agents.defaults.name`, `agents.defaults.workspace`, and `tools.web.search.apiKey` in addition to provider key and model (`apps/desktop/src/main/ipc/index.ts`).
+- Expanded `window.miqi.setup.writeInitialConfig` preload API to accept `agentName`, `workspace`, and `braveApiKey` optional parameters (`apps/desktop/src/preload/index.ts`).
+- Replaced single-view Settings page with a tabbed layout: **通用** (agent name, workspace, model, temperature, max tokens), **Web 工具** (Brave Search API key), **外观** (light/dark/system theme toggle), and **运行日志** (existing logs viewer) (`apps/desktop/src/renderer/features/settings/SettingsPage.tsx`).
+
+### Fixed
+- Fixed Electron desktop session not persisting assistant replies: `_run_agent_loop` returns `final_content` separately from `messages`; `_save_turn` never saw it.  
+  Now explicitly appends the final assistant message to `session.messages` before `sessions.save()` (`miqi/agent/loop.py`).
+- Fixed Electron desktop chat messages lost when switching navigation tabs: `ChatConsole` was conditionally rendered and unmounted on every tab change.  
+  Component is now always mounted; hidden/shown via CSS `hidden` class so React state is preserved (`apps/desktop/src/renderer/App.tsx`).
+- Fixed Electron desktop chat showing no prior history on app restart or session change: `ChatConsole` now loads session history from `window.miqi.sessions.get()` on mount and on `sessionKey` prop changes, converting JSONL records to UI messages (`apps/desktop/src/renderer/features/chat/ChatConsole.tsx`).
+- Fixed Electron desktop assistant responses appearing instantaneously with no visual feedback: added requestAnimationFrame-based typewriter animation that reveals reply text ~4 characters per frame; an animated cursor block is shown while the response is assembling (`apps/desktop/src/renderer/features/chat/ChatConsole.tsx`).
+
+### Added
+- Added **New Session** button to Chat Console toolbar: sends `/new` to the agent bridge and clears the local message list (`apps/desktop/src/renderer/features/chat/ChatConsole.tsx`).
+- Added session key label to Chat Console toolbar so users can see which session is active (`apps/desktop/src/renderer/features/chat/ChatConsole.tsx`).
+- M1 Electron desktop shell (`apps/desktop/`):
+  - Python bridge (`miqi/bridge/server.py`) with stdin/stdout JSON-line protocol for chat streaming, session management, config CRUD, and provider operations.
+  - Electron main process with secure BrowserWindow (contextIsolation + sandbox), BridgeManager for MiQi subprocess lifecycle, and 12 typed IPC handlers with zod validation.
+  - Secure preload API via contextBridge exposing only typed RPC methods.
+  - Setup wizard: 4-step flow (welcome → environment check → provider config with connection test → save & launch).
+  - Chat console with streaming progress display, tool-call hints, code rendering, and copy support.
+  - Session explorer: split-pane list and detail view with delete.
+  - Settings: runtime logs viewer with auto-scroll, error highlighting, and export.
+  - MiQi design system: warm neutral palette, Inter font bundled locally, Tailwind v4 + Radix primitives.
 
 ### Documentation
 - Added uv installation instructions to README, getting-started, developer-guide, and contributing docs; uv is the recommended install method, pip retained as fallback.
