@@ -396,6 +396,18 @@ class MCPServerConfig(Base):
     lazy: bool = False  # If true, register a single gateway tool instead of all tools upfront; activate on demand
 
 
+class PievoConfig(Base):
+    """PiEvo — 原则进化实验选择策略。默认关闭。"""
+
+    enabled: bool = False
+    warm_up_rounds: int = 5
+    max_rounds_default: int = 20
+    monte_carlo_samples: int = 25
+    sigma: float = 0.1
+    anomaly_threshold: float = 0.85
+    new_principle_prior_mass: float = 0.001
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
@@ -404,6 +416,7 @@ class ToolsConfig(Base):
     papers: PapersToolConfig = Field(default_factory=PapersToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+    pievo: PievoConfig = Field(default_factory=PievoConfig)
 
 
 class Config(BaseSettings):
